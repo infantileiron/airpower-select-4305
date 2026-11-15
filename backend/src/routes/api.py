@@ -1,13 +1,16 @@
 import os,json
 import redis
-from fastapi import APIRouter,Depends,HTTPException,Response
+from fastapi import APIRouter,Depends,HTTPException,Response,Query
 from sqlalchemy.exc import IntegrityError
 from src.config.database import db
 from src.models.entities import User,Sample,Run,Review,Audit
-from src.schemas.business import Login,SampleInput,RunInput,ReviewInput
+from src.schemas.business import Login,SampleInput,RunInput,ReviewInput,MeterBatchInput
 from src.middlewares.auth import current,editor,admin
 from src.utils.security import verify,token
 from src.services.business import audit,dump
+from src.services.meter import ingest
+from src.services.meter_logic import MeterValidationError
+from src.services.meter_repo import SqlMeterRepository
 from src.controllers.business import ensure_run
 router=APIRouter()
 @router.post('/auth/login')
@@ -21,7 +24,8 @@ def me(u=Depends(current)):return dump(u)
 def samples(u=Depends(current),s=Depends(db)):return [dump(r) for r in s.query(Sample).order_by(Sample.hour).all()]
 @router.post('/samples')
 def create(data:SampleInput,u=Depends(editor),s=Depends(db)):
- r=Sample(**data.model_dump());s.add(r)
+ values=data.model_dump();values['source']='manual';values['source_batch_id']=None;values['meter_revision']=None
+ r=Sample(**values);s.add(r)
  try:s.commit()
  except IntegrityError:s.rollback();raise HTTPException(409,'该小时已存在，请使用修订功能')
  audit(s,u,'录入小时 '+r.hour);return dump(r)
@@ -30,9 +34,31 @@ def edit(i:int,data:SampleInput,u=Depends(editor),s=Depends(db)):
  r=s.get(Sample,i)
  if not r:raise HTTPException(404,'小时样本不存在')
  for k,v in data.model_dump().items():setattr(r,k,v)
+ # 人工修订即转为人工样本，后续仪表批次不再覆盖该小时
+ r.source='manual';r.source_batch_id=None;r.meter_revision=None
  try:s.commit()
  except IntegrityError:s.rollback();raise HTTPException(409,'小时重复')
  audit(s,u,'修订样本 '+str(i));return dump(r)
+@router.post('/meter/batches')
+def meter_batch(data:MeterBatchInput,u=Depends(editor),s=Depends(db)):
+ repo=SqlMeterRepository(s)
+ try:
+  summary=ingest(repo,data.batch_ref,[r.model_dump() for r in data.readings],backfill=data.backfill)
+  s.commit()
+ except MeterValidationError as e:
+  s.rollback();raise HTTPException(409,str(e))
+ except IntegrityError:
+  s.rollback();raise HTTPException(409,'批次引用或读数唯一键冲突，请重试或更换批次引用')
+ audit(s,u,('仪表批次接入 '+data.batch_ref+' / '+summary['status']))
+ if summary['status']=='rejected':
+  raise HTTPException(422,summary['reason'] or '批次校验未通过，已拒绝并留痕')
+ return summary
+@router.get('/meter/batches')
+def meter_batches(status:str|None=Query(default=None),u=Depends(current),s=Depends(db)):
+ if status and status not in ('pending','success','rejected'):raise HTTPException(422,'批次状态不支持')
+ return [dump(r) for r in SqlMeterRepository(s).list_batches(status)]
+@router.get('/meter/hours')
+def meter_hours(u=Depends(current),s=Depends(db)):return SqlMeterRepository(s).meter_hours_view()
 @router.get('/runs')
 def runs(u=Depends(current),s=Depends(db)):return [dump(r) for r in s.query(Run).order_by(Run.id.desc()).all()]
 @router.post('/runs')

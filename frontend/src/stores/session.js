@@ -1,1 +1,1 @@
-export const state={user:null,samples:[],runs:[],reviews:[],selected:null};
+export const state={user:null,samples:[],meterBatches:[],meterHours:[],runs:[],reviews:[],selected:null};

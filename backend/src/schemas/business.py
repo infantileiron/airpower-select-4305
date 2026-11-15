@@ -18,6 +18,25 @@ class SampleInput(BaseModel):
   d=datetime.fromisoformat(v)
   if d.tzinfo or d.minute or d.second or d.microsecond:raise ValueError('使用工厂本地整点小时，不带时区偏移')
   return d.strftime('%Y-%m-%dT%H:00')
+class MeterReadingInput(BaseModel):
+ hour:str
+ revision:int=Field(ge=1)
+ reading:float=Field(ge=0,le=1_000_000_000,allow_inf_nan=False)
+ pressure:float=Field(ge=0,le=20,allow_inf_nan=False)
+ flow:float=Field(ge=0,le=1000,allow_inf_nan=False)
+ temperature:float=Field(ge=-30,le=100,allow_inf_nan=False)
+ machines:int=Field(ge=0,le=20)
+ sensor_noise:float=Field(ge=-100,le=100,allow_inf_nan=False)
+ @field_validator('hour')
+ @classmethod
+ def hourly(cls,v):
+  d=datetime.fromisoformat(v)
+  if d.tzinfo or d.minute or d.second or d.microsecond:raise ValueError('使用工厂本地整点小时，不带时区偏移')
+  return d.strftime('%Y-%m-%dT%H:00')
+class MeterBatchInput(BaseModel):
+ batch_ref:str=Field(min_length=1,max_length=80)
+ backfill:bool=False
+ readings:list[MeterReadingInput]=Field(min_length=1,max_length=10000)
 class RunInput(BaseModel):
  name:str=Field(min_length=2,max_length=100)
  features:list[Feature]=Field(default=['pressure','flow','temperature','machines'],min_length=1,max_length=5)
